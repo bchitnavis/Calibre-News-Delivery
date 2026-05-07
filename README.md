@@ -6,7 +6,7 @@ __English__ · [简体中文](README.zh-CN.md)
 
 ![](banner.png)
 
-Leverages GitHub Actions to schedule Calibre to send news via email.
+Leverages GitHub Actions to schedule Calibre to deliver news to SMTP email or an Obsidian news folder.
 
 ## Shortcut
 
@@ -21,19 +21,27 @@ Leverages GitHub Actions to schedule Calibre to send news via email.
 
 |Name|Required|Description|Example|
 |---|---|---|---|
-|FROM|Yes|Your email address|xxx@gmail.com|
-|TO|Yes|Destination email address|xxx@kindle.com|
-|ENCRYPT|Yes|SMTP encryption method|SSL|
-|SECRET|Yes|SMTP password|xxxxxxxxxx|
-|SMTP|Yes|SMTP server|smtp.gmail.com|
-|PORT|Yes|SMTP port|465|
+|DELIVERY|No|Delivery target: `obsidian` or `smtp` (default is `obsidian`)|obsidian|
+|OBSIDIAN_NEWS_DIR|Yes for `obsidian`|Folder to publish converted files (overrides workflow default)|C:/Users/bchit/vaults/Bharat's Obsidian Synced Vault/22.00 - News|
+|FROM|Yes for `smtp`|Your email address|xxx@gmail.com|
+|TO|Yes for `smtp`|Destination email address|xxx@kindle.com|
+|ENCRYPT|Yes for `smtp`|SMTP encryption method|SSL|
+|SECRET|Yes for `smtp`|SMTP password|xxxxxxxxxx|
+|SMTP|Yes for `smtp`|SMTP server|smtp.gmail.com|
+|PORT|Yes for `smtp`|SMTP port|465|
 |FORMAT|No|The ebook format (default is epub)|epub|
-|SIZE|No|Attachment size limit (default is 25MB)|25|
+|SIZE|No, `smtp` only|Attachment size limit (default is 25MB)|25|
 |DAYS|No|Ebooks retention period (default is 90 days)|90|
 
-5) Navigate to "__[Actions](../../actions)__" and click [ __Calibre News Delivery__ > __Run workflow__ ] to test.
+5) (Optional) Add repository variable `RUNNER_LABEL` under [Settings > Secrets and variables > Actions > Variables].
 
-Normally, you may receive two example ebooks sent from your project.
+|Variable|Required|Description|Example|
+|---|---|---|---|
+|RUNNER_LABEL|No|Runner label used by the workflow (default `ubuntu-latest`)|self-hosted|
+
+6) Navigate to "__[Actions](../../actions)__" and click [ __Calibre News Delivery__ > __Run workflow__ ] to test.
+
+With default settings, the workflow publishes converted files to `OBSIDIAN_NEWS_DIR`.
 
 > [!TIP]
 > 📹 A Brief Tour Video: [https://youtu.be/sIFsoztF58A](https://youtu.be/sIFsoztF58A)
@@ -65,6 +73,103 @@ All converted ebooks will be zipped together and stored in the Artifacts of GitH
 You can change the retention period in the "__[Artifact and log retention](../../settings/actions#retention-header)__" section on the Actions settings page. You can also do this through the environment settings (refer to the [Setup](#setup) section).
 
 Be aware that files exceeding the size limit for email attachments will not be sent via SMTP. You will need to download them manually from the Artifacts.
+
+## Obsidian Notes
+
+To publish to your vault, set `DELIVERY=obsidian` and set `OBSIDIAN_NEWS_DIR` to your target news folder.
+
+This repository is currently configured with a workflow default path of `C:/Users/bchit/vaults/Bharat's Obsidian Synced Vault/22.00 - News` when `OBSIDIAN_NEWS_DIR` is not provided as a secret.
+
+Because GitHub-hosted runners cannot access local folders on your machine, this mode requires a runner that can reach your vault path (for example, a self-hosted runner on the same machine where your vault is stored).
+
+For Windows vault paths (like `C:/Users/you/Documents/Obsidian/Vault/News`), set:
+
+1) `DELIVERY=obsidian`
+2) `OBSIDIAN_NEWS_DIR=C:/.../YourVault/News`
+3) Repository variable `RUNNER_LABEL=self-hosted`
+
+The workflow uses a PowerShell-native publish step on Windows runners, so `C:/...` paths are handled directly.
+
+## Standalone Windows Mode
+
+You can run this project locally on Windows without GitHub Actions.
+
+### Requirements
+
+1) Install Calibre and ensure these commands are available in your terminal PATH:
+	- `ebook-convert`
+	- `ebook-meta`
+	- `calibre-smtp` (only if you use SMTP delivery)
+
+### Setup
+
+1) Copy `standalone.config.example.json` to `standalone.config.json`.
+2) Edit `standalone.config.json`:
+	- Set `delivery` to `obsidian`.
+	- Set `obsidianNewsDir` to your vault news folder.
+ 	- Optional for NYT subscription access: set `nytAuth.username`, `nytAuth.password`, and/or `nytAuth.cookieHeader`.
+	- Optional NYT reliability tuning: set `nytAuth.useEmbeddedContent` and `nytAuth.maxArticlesPerFeed`.
+3) Ensure your recipes are in `recipe_list.txt` and/or `*.recipe` files are in repository root.
+
+For NYT specifically, cookie-based auth is typically more reliable than username/password. You can paste a browser cookie header string into `nytAuth.cookieHeader`.
+
+Recommended NYT settings for fewer failures:
+1) `nytAuth.useEmbeddedContent = true`
+2) `nytAuth.maxArticlesPerFeed = 8`
+3) `nytAuth.excludeFeeds = ["Opinion.xml", "Arts.xml"]`
+4) `nytAuth.threads = 1`
+5) `nytAuth.delaySeconds = 2`
+
+You can also target only specific sections:
+1) `nytAuth.includeFeeds = ["HomePage.xml", "World.xml", "US.xml", "Business.xml"]`
+2) Leave `includeFeeds` empty to keep all default feeds.
+
+To auto-generate a cookie header from your local browser profile:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\extract-nyt-cookie-header.ps1 -Browser firefox -UpdateConfig -ConfigPath .\standalone.config.json
+```
+
+Notes:
+1) Supported browsers are `firefox`, `edge`, and `chrome`.
+2) The helper uses `sqlite3.exe` if present, otherwise it falls back to `py` or `python`.
+3) Add `-CopyToClipboard` to also copy the header string to your clipboard.
+
+For FT specifically, you must use the interactive login script because FT's CAPTCHAs and consent frames reliably block headless automated logins.
+```powershell
+python interactive_ft_login.py
+```
+This script will open a Firefox window. Log into `ft.com` manually, and when fully logged in, press Enter in your terminal. The script will automatically extract and inject the active cookies into `standalone.config.json` under `ftAuth.cookieHeader`.
+
+Recommended FT settings for stability and automation:
+1) `ftAuth.maxArticlesPerFeed = 50`
+2) `ftAuth.threads = 1`
+3) `ftAuth.delaySeconds = 4`
+4) Leave `ftAuth.issueUrl` and `ftAuth.startArticleUrl` completely empty (`""`) to automatically target the current daily issue.
+
+### Run
+
+From repository root in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run-local.ps1 -ConfigPath .\standalone.config.json
+```
+
+Converted files are saved in `converted_ebooks` and published to your configured `obsidianNewsDir`.
+
+### One-Command Run (Refresh Cookie + Deliver)
+
+You can refresh NYT cookie and run delivery in one command:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run-local-with-cookie-refresh.ps1 -ConfigPath .\standalone.config.json -Browser firefox
+```
+
+Optional: add `-CopyCookieToClipboard` if you also want the cookie header copied.
+
+### Schedule Locally (Optional)
+
+Use Windows Task Scheduler to run `run-local.ps1` on your preferred schedule.
 
 ## Notice
 

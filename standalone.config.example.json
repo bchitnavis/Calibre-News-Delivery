@@ -1,0 +1,83 @@
+{
+  "delivery": "obsidian",
+  "obsidianNewsDir": "C:/Users/bchit/vaults/Bharat's Obsidian Synced Vault/22.00 - News",
+  "obsidianNote": {
+    "enabled": true,
+    "emojiTitle": "📰",
+    "tags": [
+      "news",
+      "digest",
+      "calibre"
+    ],
+    "links": [
+      "22.00 - News",
+      "Inbox"
+    ]
+  },
+  "logging": {
+    "enabled": true,
+    "directory": "logs",
+    "debug": false,
+    "verboseNativeOutput": true
+  },
+  "format": "epub",
+  "outputDir": "converted_ebooks",
+  "recipeListFile": "recipe_list.txt",
+  "coversDir": "covers",
+  "stylesDir": "styles",
+  "author": "Calibre News Delivery",
+  "publisher": "bookfere.com",
+  "sizeLimitMb": 25,
+  "nytAuth": {
+    "username": "",
+    "password": "",
+    "cookieHeader": "",
+    "useEmbeddedContent": true,
+    "maxArticlesPerFeed": 6,
+    "threads": 1,
+    "delaySeconds": 4,
+    "playwrightFallback": true,
+    "pythonPath": "python",
+    "includeFeeds": [
+      "HomePage.xml",
+      "World.xml",
+      "US.xml",
+      "Business.xml"
+    ],
+    "excludeFeeds": []
+  },
+  "ftAuth": {
+    "username": "bchitnavis@gmail.com",
+    "password": "Blue1234",
+    "cookieHeader": "",
+    "issueDate": "",
+    "issueUrl": "",
+    "maxArticlesPerFeed": 30,
+    "threads": 1,
+    "delaySeconds": 1,
+    "playwrightFallback": true,
+    "pythonPath": "python",
+    "includeFeeds": [
+      "front page",
+      "national",
+      "international",
+      "companies & markets",
+      "uk companies",
+      "arts",
+      "ft big read",
+      "the ft view",
+      "opinion",
+      "lex"
+    ],
+    "excludeFeeds": []
+  },
+  "smtp": {
+    "server": "smtp.gmail.com",
+    "port": 465,
+    "encryption": "SSL",
+    "username": "you@example.com",
+    "password": "app-password",
+    "from": "you@example.com",
+    "to": "kindle@example.com"
+  }
+}

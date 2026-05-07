@@ -1,0 +1,520 @@
+#!/usr/bin/env python
+# vim:fileencoding=utf-8
+from datetime import datetime
+from html import escape
+import json
+import os
+import re
+import subprocess
+from urllib.parse import quote
+
+from html5_parser import parse
+
+from calibre import browser
+from calibre.web.feeds.news import BasicNewsRecipe, classes
+
+
+class ft(BasicNewsRecipe):
+    title = 'Financial Times'
+    language = 'en_GB'
+    __author__ = 'Kovid Goyal, unkn0wn'
+    description = 'The Financial Times is one of the world’s leading news organisations, recognised internationally for its authority, integrity and accuracy.'
+    oldest_article = 1.15
+    max_articles_per_feed = 50
+    no_stylesheets = True
+    remove_javascript = True
+    remove_empty_feeds = True
+    ignore_duplicate_articles = {'url'}
+    resolve_internal_links = True
+    remove_attributes = ['style', 'width', 'height']
+    masthead_url = 'https://im.ft-static.com/m/img/masthead_main.jpg'
+    simultaneous_downloads = 1
+    delay = 1
+    needs_subscription = 'optional'
+    username = os.environ.get('FT_USERNAME', '').strip()
+    password = os.environ.get('FT_PASSWORD', '').strip()
+
+    extra_css = '''
+        .article-info__time-byline {font-size:small; font-weight:bold; }
+        .o-topper__visual, #fig, .main-image, .n-content-image { text-align:center; font-size:small; }
+        blockquote, i { color:#5c5c5c; }
+        .o-topper__standfirst { font-style:italic; color:#202020; }
+        .o-topper__topic, .article-info__time-byline-content { font-size:small; color:#5c5c5c; }
+    '''
+
+    recipe_specific_options = {
+        'days': {
+            'short': 'Oldest article to download from this news source. In days ',
+            'long': 'For example, 0.5, gives you articles from the past 12 hours',
+            'default': str(oldest_article),
+        }
+    }
+
+    pressreader_base_url = os.environ.get('FT_PRESSREADER_BASE_URL', 'https://ft.pressreader.com/v99c').strip() or 'https://ft.pressreader.com/v99c'
+
+    def __init__(self, *args, **kwargs):
+        cookie_header = os.environ.get('FT_COOKIE_HEADER', '').strip()
+        username = os.environ.get('FT_USERNAME', '').strip()
+        password = os.environ.get('FT_PASSWORD', '').strip()
+        include_feeds = os.environ.get('FT_INCLUDE_FEEDS', '').strip()
+        exclude_feeds = os.environ.get('FT_EXCLUDE_FEEDS', '').strip()
+        max_per_feed = os.environ.get('FT_MAX_ARTICLES_PER_FEED', '').strip()
+        threads = os.environ.get('FT_THREADS', '').strip()
+        delay_seconds = os.environ.get('FT_DELAY_SECONDS', '').strip()
+
+        self.include_feed_tokens = [x.strip().lower() for x in include_feeds.split(',') if x.strip()]
+        self.exclude_feed_tokens = [x.strip().lower() for x in exclude_feeds.split(',') if x.strip()]
+        self._last_playwright_error = ''
+
+        # Allow cookie-only auth by providing placeholders when an auth cookie exists.
+        self.username = username or ('cookie-auth' if cookie_header else '')
+        self.password = password or ('cookie-auth' if cookie_header else '')
+
+        BasicNewsRecipe.__init__(self, *args, **kwargs)
+
+        if max_per_feed:
+            try:
+                n = int(max_per_feed)
+                if n > 0:
+                    self.max_articles_per_feed = n
+            except Exception:
+                pass
+
+        if threads:
+            try:
+                n_threads = int(threads)
+                if n_threads > 0:
+                    self.simultaneous_downloads = n_threads
+            except Exception:
+                pass
+
+        if delay_seconds:
+            try:
+                d_sec = int(delay_seconds)
+                if d_sec >= 0:
+                    self.delay = d_sec
+            except Exception:
+                pass
+
+        if os.environ.get('FT_PLAYWRIGHT_FALLBACK', '').strip().lower() in ('yes', 'true', '1'):
+            self.articles_are_obfuscated = True
+
+        d = self.recipe_specific_options.get('days')
+        if d and isinstance(d, str):
+            self.oldest_article = float(d)
+
+    keep_only_tags = [
+        classes(
+            'body_json o-topper__topic o-topper__headline o-topper__standfirst '
+            'article-info__time-byline-content o-topper__visual main-image'
+        ),
+        dict(name='article', attrs={'id': 'article-body'}),
+    ]
+
+    remove_tags = [
+        dict(name=['source', 'svg', 'button', 'aside']),
+        dict(name='aside', attrs={'class': 'n-content-recommended--single-story'}),
+        dict(attrs={'data-layout-name': 'card'}),
+        classes(
+            'in-article-advert flourish-disclaimer n-myft-ui__preferences-modal n-myft-ui n-myft-ui--follow'
+        ),
+    ]
+
+    def get_cover_url(self):
+        soup = self.index_to_soup('https://www.frontpages.com/financial-newspapers/')
+        for img in soup.findAll('img', src=True):
+            if 'financial-times' in img['src']:
+                return 'https://www.frontpages.com' + img['src']
+
+    # needs_subscription = 'optional'
+    #
+    # def get_browser(self, *args, **kw):
+    #     br = super().get_browser(*args, **kw)
+    #     if self.username and self.password:
+    #         # ft.com uses a CAPTCHA on its login page so this sadly doesn't work
+    #         br.open('https://accounts.ft.com/login?location=https%3A%2F%2Fwww.ft.com')
+    #         br.select_form(id='email-form')
+    #         br['email'] = self.username
+    #         br.submit()
+    #         br.select_form(id='login-form')
+    #         br['password'] = self.password
+    #         br.submit()
+    #     return br
+
+    def get_browser(self, *args, **kwargs):
+        return self
+
+    def clone_browser(self, *args, **kwargs):
+        return self.get_browser()
+
+    def open_novisit(self, *args, **kwargs):
+        br = browser(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:149.0) Gecko/20100101 Firefox/149.0')
+        br.addheaders += [
+            ('Referer', 'https://www.google.com/')
+        ]
+        cookie_header = os.environ.get('FT_COOKIE_HEADER', '').strip()
+        if cookie_header:
+            br.addheaders = [h for h in br.addheaders if h[0].lower() != 'cookie']
+            br.addheaders.append(('Cookie', cookie_header))
+        return br.open_novisit(*args, **kwargs)
+
+    open = open_novisit
+
+    feeds = []
+
+    articles_are_obfuscated = False
+
+    def parse_index(self):
+        issue_textview_url = self._get_issue_textview_url()
+        raw = self._fetch_issue_index(issue_textview_url)
+        root = parse(raw)
+
+        scrollers = root.xpath('//div[contains(concat(" ", normalize-space(@class), " "), " scroller ")]')
+        if not scrollers:
+            raise ValueError('PressReader issue layout not found at %s' % issue_textview_url)
+
+        issue_base_url = issue_textview_url[:-len('/textview')] if issue_textview_url.endswith('/textview') else issue_textview_url.rstrip('/')
+        sections = []
+        current_title = 'Front Page'
+        current_articles = []
+        seen_urls = set()
+
+        for child in scrollers[0].iterchildren():
+            classes_attr = child.get('class', '')
+            if child.tag == 'div' and 'section-topic' in classes_attr:
+                current_title, current_articles = self._push_section(sections, current_title, current_articles)
+                next_title = self._clean_text(' '.join(child.xpath('.//div[contains(@class, "title")]/text()')))
+                if next_title:
+                    current_title = next_title
+                continue
+
+            if child.tag != 'section' or 'article-group' not in classes_attr:
+                continue
+
+            for article in child.xpath('.//article[@data-articleid]'):
+                article_id = (article.get('data-articleid') or '').strip()
+                if not article_id:
+                    continue
+
+                title = self._clean_title(' '.join(article.xpath('.//*[contains(@class, "article-title")]//text()')))
+                if not title:
+                    continue
+
+                summary = self._clean_text(' '.join(article.xpath('.//*[contains(@class, "article-text")]//text()')))
+                url = issue_base_url.rstrip('/') + '/' + article_id
+                if url in seen_urls:
+                    continue
+
+                current_articles.append({
+                    'title': title,
+                    'url': url,
+                    'description': summary,
+                })
+                seen_urls.add(url)
+
+        current_title, current_articles = self._push_section(sections, current_title, current_articles)
+
+        start_url = os.environ.get('FT_START_ARTICLE_URL', '').strip()
+        if start_url:
+            flat_articles = []
+            for sec_title, arts in sections:
+                flat_articles.extend(arts)
+            
+            start_idx = -1
+            target_id = start_url.rstrip('/').split('/')[-1]
+            
+            for i, a in enumerate(flat_articles):
+                if target_id in a['url']:
+                    start_idx = i
+                    break
+            
+            if start_idx != -1:
+                self.log('Found start article at index %d, taking %d articles' % (start_idx, self.max_articles_per_feed))
+                selected_articles = flat_articles[start_idx : start_idx + self.max_articles_per_feed]
+                return [('Custom Selection', selected_articles)]
+            else:
+                self.log.warn('Target start article %s not found in index. Proceeding with normal filters.' % start_url)
+
+        filtered_sections = self._filter_sections(sections)
+        
+        truncated_sections = []
+        for title, arts in filtered_sections:
+            truncated_sections.append((title, arts[:self.max_articles_per_feed]))
+
+        if not truncated_sections:
+            raise ValueError('No PressReader articles matched the FT include/exclude filters.')
+        return truncated_sections
+
+    def _get_issue_textview_url(self):
+        issue_url = os.environ.get('FT_PRESSREADER_ISSUE_URL', '').strip()
+        if issue_url:
+            issue_url = issue_url.rstrip('/')
+            if not issue_url.endswith('/textview'):
+                issue_url += '/textview'
+            return issue_url
+
+        issue_date = os.environ.get('FT_PRESSREADER_DATE', '').strip()
+        if issue_date and re.match(r'^\d{8}$', issue_date):
+            return self.pressreader_base_url.rstrip('/') + '/' + issue_date + '/textview'
+
+        return self.pressreader_base_url.rstrip('/') + '/' + datetime.now().strftime('%Y%m%d') + '/textview'
+
+    def _fetch_issue_index(self, issue_textview_url):
+        raw = None
+        if os.environ.get('FT_PLAYWRIGHT_SCRIPT_PATH', '').strip():
+            raw = self._fetch_with_playwright(issue_textview_url)
+        if raw:
+            return raw
+
+        try:
+            return self.index_to_soup(issue_textview_url, raw=True)
+        except Exception as e:
+            raise ValueError('Unable to fetch PressReader issue index %s: %s' % (issue_textview_url, e))
+
+    def _push_section(self, sections, title, articles):
+        if articles:
+            sections.append((title, articles))
+        return title, []
+
+    def _filter_sections(self, sections):
+        if not sections:
+            return []
+
+        filtered = sections
+        if self.include_feed_tokens:
+            matched = [
+                section for section in filtered
+                if any(token in section[0].lower() for token in self.include_feed_tokens)
+            ]
+            if matched:
+                filtered = matched
+            else:
+                self.log.warn(
+                    'FT include filters did not match any PressReader sections; using all sections instead.'
+                )
+
+        if self.exclude_feed_tokens:
+            filtered = [
+                section for section in filtered
+                if not any(token in section[0].lower() for token in self.exclude_feed_tokens)
+            ]
+        return filtered
+
+    def _clean_text(self, value):
+        return re.sub(r'\s+', ' ', value or '').strip()
+
+    def _clean_title(self, value):
+        title = self._clean_text(value)
+        return re.sub(r'^Article\s*', '', title, flags=re.IGNORECASE)
+
+    def get_obfuscated_article(self, url):
+        from calibre.ptempfile import PersistentTemporaryFile
+
+        if os.environ.get('FT_PLAYWRIGHT_FALLBACK', '').strip().lower() in ('yes', 'true', '1'):
+            self.log('Playwright: fetching %s' % url)
+            pw_html = self._fetch_with_playwright(url)
+            if pw_html:
+                with PersistentTemporaryFile(suffix='.html') as tf:
+                    tf.write(pw_html.encode('utf-8'))
+                return tf.name
+            self.log.warn('Playwright fetch failed for %s; returning placeholder instead of mechanize fallback' % url)
+            reason = self._clean_text(self._last_playwright_error)[:600]
+            reason_html = ''
+            if reason:
+                reason_html = '<p><strong>Reason:</strong> %s</p>' % escape(reason)
+            with PersistentTemporaryFile(suffix='.html') as tf:
+                tf.write(
+                    (
+                        '<html><body><article class="expanded"><div class="article-content">'
+                        '<p class="article-text">Article could not be downloaded.</p>'
+                        '%s'
+                        '</div></article></body></html>'
+                    ) % reason_html
+                .encode('utf-8'))
+            return tf.name
+
+        try:
+            raw = self.index_to_soup(url, raw=True)
+        except Exception as e:
+            self.log.warn('Mechanize fetch failed for %s: %s' % (url, e))
+            raw = b'<html><body><p>Article could not be downloaded.</p></body></html>'
+        with PersistentTemporaryFile(suffix='.html') as tf:
+            tf.write(raw if isinstance(raw, bytes) else raw.encode('utf-8'))
+        return tf.name
+
+    def _fetch_with_playwright(self, url):
+        script = os.environ.get('FT_PLAYWRIGHT_SCRIPT_PATH', '').strip()
+        if not script:
+            self.log.warn('Playwright: FT_PLAYWRIGHT_SCRIPT_PATH env var is not set')
+            return None
+        if not os.path.exists(script):
+            self.log.warn('Playwright fetcher script not found: %s' % script)
+            return None
+
+        python = os.environ.get('FT_PYTHON_PATH', '').strip() or 'python'
+        env = dict(os.environ)
+
+        self._last_playwright_error = ''
+        try:
+            result = subprocess.run(
+                [python, script, url],
+                capture_output=True,
+                timeout=60,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            self._last_playwright_error = 'Playwright fetcher timed out after 60 seconds'
+            self.log.warn('Playwright fetcher timed out for %s after 60 seconds' % url)
+            return None
+        if result.returncode != 0:
+            stderr_text = result.stderr.decode('utf-8', errors='replace').strip()
+            self._last_playwright_error = stderr_text[:1000]
+            self.log.warn(
+                'Playwright fetcher exit %d for %s: %s'
+                % (
+                    result.returncode,
+                    url,
+                    stderr_text[:400],
+                )
+            )
+            return None
+        html = result.stdout.decode('utf-8', errors='replace')
+        self._last_playwright_error = ''
+        self.log('Playwright fetched %d chars from %s' % (len(html), url))
+        return html
+
+    def preprocess_raw_html(self, raw, *a):
+        root = parse(raw)
+        pressreader_articles = root.xpath('//article[contains(concat(" ", normalize-space(@class), " "), " expanded ")]')
+        if pressreader_articles:
+            return self._build_pressreader_article_html(pressreader_articles[0])
+
+        if root.xpath('//article[@id="article-body"]'):
+            self.log('**has article content')
+            return raw
+
+        self.log('**no article content')
+
+        # FT pages can vary by region/paywall/A-B tests. If NewsArticle JSON is
+        # missing, do not throw; return the raw page so Calibre can continue.
+        m = re.search(r'type="application/ld\+json">[^<]+?"@type":"NewsArticle"', raw)
+        if not m:
+            self.log.warn('FT NewsArticle JSON not found; returning raw page content')
+            return raw
+
+        raw = raw[m.start() :]
+        if '>' not in raw:
+            self.log.warn('FT JSON script tag malformed; returning raw page content')
+            return raw
+        raw = raw.split('>', 1)[1]
+
+        try:
+            data = json.JSONDecoder().raw_decode(raw)[0]
+        except Exception as e:
+            self.log.warn('FT JSON decode failed: %s; returning raw page content' % e)
+            return raw
+
+        if not isinstance(data, dict) or 'headline' not in data or 'articleBody' not in data:
+            self.log.warn('FT NewsArticle JSON missing headline/articleBody; returning raw page content')
+            return raw
+
+        title = data['headline']
+        body = data['articleBody']
+        body = body.replace('\n\n', '<p>')
+        author = ''
+        if 'author' in data:
+            try:
+                author = data['author']['name']
+            except TypeError:
+                author = ' and '.join(x['name'] for x in data['author'])
+        image = desc = title_image_url = ''
+
+        def resize_img(img):
+            a = 'https://www.ft.com/__origami/service/image/v2/images/raw/'
+            b = quote(img, safe='')
+            c = '?dpr=2&fit=scale-down&quality=medium&source=next&width=400'
+            # use width = 200, 300, 400,.. 700...
+            return a + b + c
+
+        if data.get('image'):
+            image_url = data['image']['url']
+            if body.__contains__(image_url) is False:
+                title_image_url = resize_img(image_url)
+                image = '<p><img src="{}">'.format(title_image_url)
+        # embedded image links
+
+        def insert_image(m):
+            url = m.group()[1:-1]
+            if url.__contains__('studio') is False:
+                url = resize_img(url)
+            return '<span><img src="{}"></span></p><p>'.format(url)
+
+        body = re.sub(r'\[https://\S+?\]', insert_image, body)
+        if data.get('description'):
+            desc = '<h2>' + data['description'] + '</h2>'
+        html = (
+            '<html><body><div class="body_json"><h1>'
+            + title
+            + '</h1>'
+            + desc
+            + '<h3>'
+            + author
+            + '</h3>'
+            + image
+            + '<p>'
+            + body
+        )
+        return html
+
+    def _build_pressreader_article_html(self, article):
+        title = self._clean_text(' '.join(article.xpath('.//*[contains(@class, "article-title")]//text()')))
+        subtitle = self._clean_text(' '.join(article.xpath('.//*[contains(@class, "article-subtitle")]//text()')))
+        source = self._clean_text(' '.join(article.xpath('.//*[contains(@class, "article-source")]//text()')))
+        author = self._clean_text(' '.join(article.xpath('.//*[contains(@class, "author")]/text()')))
+        published = self._clean_text(' '.join(article.xpath('.//*[contains(@class, "date")]/text()')))
+        paragraphs = [
+            self._clean_text(' '.join(node.xpath('.//text()')))
+            for node in article.xpath('.//*[contains(@class, "article-content")]//p[contains(@class, "article-text")]')
+        ]
+        paragraphs = [paragraph for paragraph in paragraphs if paragraph]
+
+        body = ''.join('<p>%s</p>' % paragraph for paragraph in paragraphs)
+        meta_bits = [bit for bit in [source, author, published] if bit]
+        meta = '<p><strong>%s</strong></p>' % ' | '.join(meta_bits) if meta_bits else ''
+
+        image_html = ''
+        image_urls = article.xpath('.//figure[contains(@class, "article-pic")]//img/@src')
+        if image_urls:
+            image_html = '<p><img src="%s" /></p>' % image_urls[0]
+
+        subtitle_html = '<h2>%s</h2>' % subtitle if subtitle else ''
+        return '<html><body><div class="body_json"><h1>%s</h1>%s%s%s%s</div></body></html>' % (
+            title,
+            subtitle_html,
+            meta,
+            image_html,
+            body,
+        )
+
+    def preprocess_html(self, soup):
+        p = soup.find(**classes('o-topper__standfirst'))
+        if p:
+            p.name = 'p'
+        div = soup.findAll(**classes('article-info__time-byline-content'))
+        for d in div:
+            for p_ in d.findAll('p'):
+                p_.name = 'div'
+        for tim in soup.findAll('time'):
+            if tim.string:
+                tim.string = ' ' + tim.string
+        for table in soup.findAll('table'):
+            if len(table.find('tbody').findAll('tr')) > 20:
+                table.find('tbody').decompose()
+                table.string = '** a table that was supposed to be here has been removed.'
+        for con in soup.findAll(attrs={'class': 'n-content-layout__slot'}):
+            if con.find('figure'):
+                con['id'] = 'fig'
+        return soup
+
+
+calibre_most_common_ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36'
